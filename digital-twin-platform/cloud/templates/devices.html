@@ -1,0 +1,654 @@
+{% extends "base.html" %}
+
+{% block title %}设备管理 - 水网数字孪生平台{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12 mb-4">
+        <div class="card">
+            <div class="card-body">
+                <h2 class="card-title">水网设备管理</h2>
+                <p class="card-text">查看和控制水网系统中的所有设备</p>
+                
+                <div class="mb-3">
+                    <div class="btn-group" role="group">
+                        <button type="button" class="btn btn-outline-primary active" data-filter="all">全部</button>
+                        <button type="button" class="btn btn-outline-primary" data-filter="water_sensor">水质传感器</button>
+                        <button type="button" class="btn btn-outline-primary" data-filter="valve">阀门</button>
+                        <button type="button" class="btn btn-outline-primary" data-filter="pump">水泵</button>
+                        <button type="button" class="btn btn-outline-primary" data-filter="edge">边缘节点</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row" id="devices-container">
+    <!-- 设备卡片将通过JavaScript动态添加 -->
+    <div class="col-12 text-center py-5">
+        <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">加载中...</span>
+        </div>
+        <p class="mt-2">正在加载设备...</p>
+    </div>
+</div>
+
+<!-- 设备控制模态框 -->
+<div class="modal fade" id="deviceControlModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="deviceControlModalLabel">设备控制</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body" id="deviceControlModalBody">
+                <!-- 控制界面将通过JavaScript动态添加 -->
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                <button type="button" class="btn btn-primary" id="saveDeviceControlBtn">保存更改</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // 当前选中的设备
+    let currentDevice = null;
+    
+    // 当前设备列表
+    let devicesList = [];
+    
+    // 设备控制模态框
+    let deviceControlModal = null;
+    
+    document.addEventListener('DOMContentLoaded', function() {
+        // 初始化WebSocket连接
+        const socket = io();
+        
+        // 初始化模态框
+        deviceControlModal = new bootstrap.Modal(document.getElementById('deviceControlModal'));
+        
+        // 获取设备列表
+        fetchDevices();
+        
+        // 过滤按钮点击事件
+        document.querySelectorAll('[data-filter]').forEach(button => {
+            button.addEventListener('click', function() {
+                // 移除所有按钮的active类
+                document.querySelectorAll('[data-filter]').forEach(btn => {
+                    btn.classList.remove('active');
+                });
+                
+                // 添加当前按钮的active类
+                this.classList.add('active');
+                
+                // 过滤设备
+                filterDevices(this.getAttribute('data-filter'));
+            });
+        });
+        
+        // 保存设备控制按钮点击事件
+        document.getElementById('saveDeviceControlBtn').addEventListener('click', function() {
+            saveDeviceControl();
+        });
+        
+        // WebSocket事件处理
+        socket.on('status_update', function(data) {
+            // 更新设备状态
+            updateDeviceStatus(data);
+        });
+        
+        socket.on('telemetry_update', function(data) {
+            // 更新设备遥测数据
+            updateDeviceTelemetry(data);
+        });
+    });
+    
+    // 获取设备列表
+    function fetchDevices() {
+        fetch('/api/devices')
+            .then(response => response.json())
+            .then(data => {
+                devicesList = data;
+                renderDevices(devicesList);
+            })
+            .catch(error => {
+                console.error('获取设备列表失败:', error);
+                showError('获取设备列表失败，请刷新页面重试');
+            });
+    }
+    
+    // 渲染设备列表
+    function renderDevices(devices) {
+        const container = document.getElementById('devices-container');
+        container.innerHTML = '';
+        
+        if (devices.length === 0) {
+            container.innerHTML = `
+                <div class="col-12 text-center py-5">
+                    <p>没有找到设备</p>
+                </div>
+            `;
+            return;
+        }
+        
+        devices.forEach(device => {
+            const deviceCard = createDeviceCard(device);
+            container.appendChild(deviceCard);
+        });
+    }
+    
+    // 创建设备卡片
+    function createDeviceCard(device) {
+        const col = document.createElement('div');
+        col.className = 'col-md-4 mb-4';
+        
+        // 设置设备状态样式
+        let statusClass = 'bg-secondary';
+        let statusText = '未知';
+        
+        if (device.type === 'water_sensor') {
+            if (device.status === 'online') {
+                statusClass = 'bg-success';
+                statusText = '在线';
+            } else if (device.status === 'offline') {
+                statusClass = 'bg-secondary';
+                statusText = '离线';
+            }
+        } else if (device.type === 'valve') {
+            if (device.status === 'open') {
+                statusClass = 'bg-success';
+                statusText = '开启';
+            } else if (device.status === 'closed') {
+                statusClass = 'bg-danger';
+                statusText = '关闭';
+            } else if (device.status === 'partially_open') {
+                statusClass = 'bg-warning';
+                statusText = '部分开启';
+            }
+        } else if (device.type === 'pump') {
+            if (device.status === 'on') {
+                statusClass = 'bg-success';
+                statusText = '运行中';
+            } else if (device.status === 'off') {
+                statusClass = 'bg-danger';
+                statusText = '停止';
+            } else if (device.status === 'standby') {
+                statusClass = 'bg-warning';
+                statusText = '待机';
+            }
+        } else if (device.type === 'edge') {
+            if (device.status === 'online') {
+                statusClass = 'bg-success';
+                statusText = '在线';
+            } else if (device.status === 'offline') {
+                statusClass = 'bg-secondary';
+                statusText = '离线';
+            }
+        }
+        
+        // 设备图标
+        let deviceIcon = 'bi-question-circle';
+        if (device.type === 'water_sensor') deviceIcon = 'bi-droplet';
+        else if (device.type === 'valve') deviceIcon = 'bi-toggle-on';
+        else if (device.type === 'pump') deviceIcon = 'bi-water';
+        else if (device.type === 'edge') deviceIcon = 'bi-hdd-network';
+        
+        // 设备类型文本
+        let deviceTypeText = '未知设备';
+        if (device.type === 'water_sensor') deviceTypeText = '水质传感器';
+        else if (device.type === 'valve') deviceTypeText = '阀门';
+        else if (device.type === 'pump') deviceTypeText = '水泵';
+        else if (device.type === 'edge') deviceTypeText = '边缘节点';
+        
+        // 设备详情内容
+        let detailsContent = '';
+        
+        if (device.type === 'water_sensor') {
+            detailsContent = `
+                <div class="mb-2">
+                    <strong>流量:</strong> <span class="device-flow-rate">${device.flow_rate || 'N/A'}</span> L/min
+                </div>
+                <div class="mb-2">
+                    <strong>压力:</strong> <span class="device-pressure">${device.pressure || 'N/A'}</span> MPa
+                </div>
+                <div class="mb-2">
+                    <strong>水质指数:</strong> <span class="device-water-quality">${device.water_quality || 'N/A'}</span>
+                </div>
+                <div class="mb-2">
+                    <strong>水温:</strong> <span class="device-temperature">${device.temperature || 'N/A'}</span> °C
+                </div>
+            `;
+        } else if (device.type === 'valve') {
+            detailsContent = `
+                <div class="mb-2">
+                    <strong>开度:</strong> <span class="device-opening">${device.opening || '0'}</span>%
+                </div>
+                <div class="mb-2">
+                    <strong>实际开度:</strong> <span class="device-actual-opening">${device.actual_opening || '0'}</span>%
+                </div>
+                <div class="mb-2">
+                    <strong>流量:</strong> <span class="device-flow-rate">${device.flow_rate || '0'}</span> L/min
+                </div>
+                <div class="mb-2">
+                    <strong>控制模式:</strong> <span class="device-mode">${device.mode === 'auto' ? '自动' : '手动'}</span>
+                </div>
+            `;
+        } else if (device.type === 'pump') {
+            detailsContent = `
+                <div class="mb-2">
+                    <strong>功率:</strong> <span class="device-power">${device.power || '0'}</span>%
+                </div>
+                <div class="mb-2">
+                    <strong>转速:</strong> <span class="device-rpm">${device.rpm || '0'}</span> RPM
+                </div>
+                <div class="mb-2">
+                    <strong>流量:</strong> <span class="device-flow-rate">${device.flow_rate || '0'}</span> L/min
+                </div>
+                <div class="mb-2">
+                    <strong>压力:</strong> <span class="device-pressure">${device.pressure || '0'}</span> MPa
+                </div>
+                <div class="mb-2">
+                    <strong>控制模式:</strong> <span class="device-mode">${device.mode === 'auto' ? '自动' : '手动'}</span>
+                </div>
+            `;
+        } else if (device.type === 'edge') {
+            detailsContent = `
+                <div class="mb-2">
+                    <strong>位置:</strong> ${device.location || 'N/A'}
+                </div>
+                <div class="mb-2">
+                    <strong>最后活动:</strong> <span class="device-last-activity">刚刚</span>
+                </div>
+            `;
+        }
+        
+        col.innerHTML = `
+            <div class="card h-100 device-card" data-device-id="${device.device_id}" data-device-type="${device.type}">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span>
+                        <i class="bi ${deviceIcon} me-2"></i>
+                        ${deviceTypeText}
+                    </span>
+                    <span class="badge ${statusClass} device-status">${statusText}</span>
+                </div>
+                <div class="card-body">
+                    <h5 class="card-title">${device.name || device.device_id}</h5>
+                    <h6 class="card-subtitle mb-2 text-muted">${device.location || 'N/A'}</h6>
+                    
+                    <div class="device-details mt-3">
+                        ${detailsContent}
+                    </div>
+                </div>
+                <div class="card-footer">
+                    <button class="btn btn-sm btn-primary control-device-btn" data-device-id="${device.device_id}">
+                        控制设备
+                    </button>
+                </div>
+            </div>
+        `;
+        
+        // 添加控制设备按钮点击事件
+        col.querySelector('.control-device-btn').addEventListener('click', function() {
+            const deviceId = this.getAttribute('data-device-id');
+            openDeviceControl(deviceId);
+        });
+        
+        return col;
+    }
+    
+    // 过滤设备
+    function filterDevices(filter) {
+        if (filter === 'all') {
+            renderDevices(devicesList);
+        } else {
+            const filteredDevices = devicesList.filter(device => device.type === filter);
+            renderDevices(filteredDevices);
+        }
+    }
+    
+    // 打开设备控制模态框
+    function openDeviceControl(deviceId) {
+        const device = devicesList.find(d => d.device_id === deviceId);
+        if (!device) return;
+        
+        currentDevice = device;
+        
+        // 设置模态框标题
+        document.getElementById('deviceControlModalLabel').textContent = `控制设备: ${device.name || device.device_id}`;
+        
+        // 清空模态框内容
+        const modalBody = document.getElementById('deviceControlModalBody');
+        modalBody.innerHTML = '';
+        
+        // 根据设备类型创建控制界面
+        if (device.type === 'valve') {
+            modalBody.innerHTML = `
+                <div class="mb-3">
+                    <label class="form-label">阀门状态</label>
+                    <select class="form-select" id="valveStatusSelect">
+                        <option value="open" ${device.status === 'open' ? 'selected' : ''}>开启</option>
+                        <option value="closed" ${device.status === 'closed' ? 'selected' : ''}>关闭</option>
+                        <option value="partially_open" ${device.status === 'partially_open' ? 'selected' : ''}>部分开启</option>
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">阀门开度 (%)</label>
+                    <input type="range" class="form-range" min="0" max="100" step="1" id="valveOpeningRange" value="${device.opening || 0}">
+                    <div class="text-center" id="valveOpeningValue">${device.opening || 0}%</div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">控制模式</label>
+                    <select class="form-select" id="valveModeSelect">
+                        <option value="auto" ${device.mode === 'auto' ? 'selected' : ''}>自动</option>
+                        <option value="manual" ${device.mode === 'manual' ? 'selected' : ''}>手动</option>
+                    </select>
+                </div>
+            `;
+            
+            // 添加开度滑块事件
+            document.getElementById('valveOpeningRange').addEventListener('input', function() {
+                document.getElementById('valveOpeningValue').textContent = this.value + '%';
+            });
+            
+        } else if (device.type === 'pump') {
+            modalBody.innerHTML = `
+                <div class="mb-3">
+                    <label class="form-label">水泵状态</label>
+                    <select class="form-select" id="pumpStatusSelect">
+                        <option value="on" ${device.status === 'on' ? 'selected' : ''}>运行中</option>
+                        <option value="off" ${device.status === 'off' ? 'selected' : ''}>停止</option>
+                        <option value="standby" ${device.status === 'standby' ? 'selected' : ''}>待机</option>
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">功率设置 (%)</label>
+                    <input type="range" class="form-range" min="0" max="100" step="1" id="pumpPowerRange" value="${device.power || 0}">
+                    <div class="text-center" id="pumpPowerValue">${device.power || 0}%</div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">转速设置 (RPM)</label>
+                    <input type="number" class="form-control" id="pumpRpmInput" value="${device.rpm || 0}" min="0" max="3000">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">控制模式</label>
+                    <select class="form-select" id="pumpModeSelect">
+                        <option value="auto" ${device.mode === 'auto' ? 'selected' : ''}>自动</option>
+                        <option value="manual" ${device.mode === 'manual' ? 'selected' : ''}>手动</option>
+                    </select>
+                </div>
+            `;
+            
+            // 添加功率滑块事件
+            document.getElementById('pumpPowerRange').addEventListener('input', function() {
+                document.getElementById('pumpPowerValue').textContent = this.value + '%';
+            });
+            
+        } else {
+            modalBody.innerHTML = `
+                <div class="alert alert-info">
+                    此设备类型不支持直接控制。
+                </div>
+            `;
+            
+            // 隐藏保存按钮
+            document.getElementById('saveDeviceControlBtn').style.display = 'none';
+            return;
+        }
+        
+        // 显示保存按钮
+        document.getElementById('saveDeviceControlBtn').style.display = 'block';
+        
+        // 显示模态框
+        deviceControlModal.show();
+    }
+    
+    // 保存设备控制
+    function saveDeviceControl() {
+        if (!currentDevice) return;
+        
+        let command = {
+            device_id: currentDevice.device_id
+        };
+        
+        if (currentDevice.type === 'valve') {
+            // 获取阀门控制参数
+            const status = document.getElementById('valveStatusSelect').value;
+            const opening = document.getElementById('valveOpeningRange').value;
+            const mode = document.getElementById('valveModeSelect').value;
+            
+            // 设置阀门状态
+            command.command_type = 'status';
+            command.value = status;
+            sendCommand(command);
+            
+            // 设置阀门开度
+            command.command_type = 'parameter';
+            command.parameter = 'opening';
+            command.value = parseInt(opening);
+            sendCommand(command);
+            
+            // 设置控制模式
+            command.command_type = 'mode';
+            command.value = mode;
+            sendCommand(command);
+            
+        } else if (currentDevice.type === 'pump') {
+            // 获取水泵控制参数
+            const status = document.getElementById('pumpStatusSelect').value;
+            const power = document.getElementById('pumpPowerRange').value;
+            const rpm = document.getElementById('pumpRpmInput').value;
+            const mode = document.getElementById('pumpModeSelect').value;
+            
+            // 设置水泵状态
+            command.command_type = 'status';
+            command.value = status;
+            sendCommand(command);
+            
+            // 设置水泵功率
+            command.command_type = 'parameter';
+            command.parameter = 'power';
+            command.value = parseInt(power);
+            sendCommand(command);
+            
+            // 设置水泵转速
+            command.command_type = 'parameter';
+            command.parameter = 'rpm';
+            command.value = parseInt(rpm);
+            sendCommand(command);
+            
+            // 设置控制模式
+            command.command_type = 'mode';
+            command.value = mode;
+            sendCommand(command);
+        }
+        
+        // 关闭模态框
+        deviceControlModal.hide();
+    }
+    
+    // 发送命令
+    function sendCommand(command) {
+        fetch('/api/command', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(command)
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('发送命令失败');
+            }
+            return response.json();
+        })
+        .then(data => {
+            console.log('命令发送成功:', data);
+        })
+        .catch(error => {
+            console.error('发送命令失败:', error);
+            showError('发送命令失败，请重试');
+        });
+    }
+    
+    // 更新设备状态
+    function updateDeviceStatus(data) {
+        const deviceId = data.device_id;
+        const status = data.status;
+        
+        // 更新设备列表中的状态
+        const deviceIndex = devicesList.findIndex(d => d.device_id === deviceId);
+        if (deviceIndex !== -1) {
+            devicesList[deviceIndex].status = status;
+            
+            // 更新UI
+            const deviceCard = document.querySelector(`.device-card[data-device-id="${deviceId}"]`);
+            if (deviceCard) {
+                const statusBadge = deviceCard.querySelector('.device-status');
+                if (statusBadge) {
+                    // 移除所有背景类
+                    statusBadge.classList.remove('bg-success', 'bg-danger', 'bg-warning', 'bg-secondary');
+                    
+                    // 根据设备类型和状态设置新的样式
+                    const deviceType = deviceCard.getAttribute('data-device-type');
+                    
+                    if (deviceType === 'water_sensor') {
+                        if (status === 'online') {
+                            statusBadge.classList.add('bg-success');
+                            statusBadge.textContent = '在线';
+                        } else if (status === 'offline') {
+                            statusBadge.classList.add('bg-secondary');
+                            statusBadge.textContent = '离线';
+                        }
+                    } else if (deviceType === 'valve') {
+                        if (status === 'open') {
+                            statusBadge.classList.add('bg-success');
+                            statusBadge.textContent = '开启';
+                        } else if (status === 'closed') {
+                            statusBadge.classList.add('bg-danger');
+                            statusBadge.textContent = '关闭';
+                        } else if (status === 'partially_open') {
+                            statusBadge.classList.add('bg-warning');
+                            statusBadge.textContent = '部分开启';
+                        }
+                    } else if (deviceType === 'pump') {
+                        if (status === 'on') {
+                            statusBadge.classList.add('bg-success');
+                            statusBadge.textContent = '运行中';
+                        } else if (status === 'off') {
+                            statusBadge.classList.add('bg-danger');
+                            statusBadge.textContent = '停止';
+                        } else if (status === 'standby') {
+                            statusBadge.classList.add('bg-warning');
+                            statusBadge.textContent = '待机';
+                        }
+                    } else if (deviceType === 'edge') {
+                        if (status === 'online') {
+                            statusBadge.classList.add('bg-success');
+                            statusBadge.textContent = '在线';
+                        } else if (status === 'offline') {
+                            statusBadge.classList.add('bg-secondary');
+                            statusBadge.textContent = '离线';
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // 更新设备遥测数据
+    function updateDeviceTelemetry(data) {
+        const deviceId = data.device_id;
+        
+        // 更新设备列表中的数据
+        const deviceIndex = devicesList.findIndex(d => d.device_id === deviceId);
+        if (deviceIndex !== -1) {
+            // 更新设备数据
+            Object.assign(devicesList[deviceIndex], data);
+            
+            // 更新UI
+            const deviceCard = document.querySelector(`.device-card[data-device-id="${deviceId}"]`);
+            if (deviceCard) {
+                // 更新流量
+                const flowRateElement = deviceCard.querySelector('.device-flow-rate');
+                if (flowRateElement && data.flow_rate !== undefined) {
+                    flowRateElement.textContent = data.flow_rate;
+                }
+                
+                // 更新压力
+                const pressureElement = deviceCard.querySelector('.device-pressure');
+                if (pressureElement && data.pressure !== undefined) {
+                    pressureElement.textContent = data.pressure;
+                }
+                
+                // 更新水质
+                const waterQualityElement = deviceCard.querySelector('.device-water-quality');
+                if (waterQualityElement && data.water_quality !== undefined) {
+                    waterQualityElement.textContent = data.water_quality;
+                }
+                
+                // 更新温度
+                const temperatureElement = deviceCard.querySelector('.device-temperature');
+                if (temperatureElement && data.temperature !== undefined) {
+                    temperatureElement.textContent = data.temperature;
+                }
+                
+                // 更新阀门开度
+                const openingElement = deviceCard.querySelector('.device-opening');
+                if (openingElement && data.opening !== undefined) {
+                    openingElement.textContent = data.opening;
+                }
+                
+                // 更新实际开度
+                const actualOpeningElement = deviceCard.querySelector('.device-actual-opening');
+                if (actualOpeningElement && data.actual_opening !== undefined) {
+                    actualOpeningElement.textContent = data.actual_opening;
+                }
+                
+                // 更新水泵功率
+                const powerElement = deviceCard.querySelector('.device-power');
+                if (powerElement && data.power !== undefined) {
+                    powerElement.textContent = data.power;
+                }
+                
+                // 更新水泵转速
+                const rpmElement = deviceCard.querySelector('.device-rpm');
+                if (rpmElement && data.rpm !== undefined) {
+                    rpmElement.textContent = data.rpm;
+                }
+                
+                // 更新控制模式
+                const modeElement = deviceCard.querySelector('.device-mode');
+                if (modeElement && data.mode !== undefined) {
+                    modeElement.textContent = data.mode === 'auto' ? '自动' : '手动';
+                }
+            }
+        }
+    }
+    
+    // 显示错误信息
+    function showError(message) {
+        // 创建错误提示
+        const alertDiv = document.createElement('div');
+        alertDiv.className = 'alert alert-danger alert-dismissible fade show';
+        alertDiv.setAttribute('role', 'alert');
+        alertDiv.innerHTML = `
+            ${message}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="关闭"></button>
+        `;
+        
+        // 添加到页面顶部
+        document.querySelector('.container').prepend(alertDiv);
+        
+        // 5秒后自动关闭
+        setTimeout(() => {
+            const bsAlert = new bootstrap.Alert(alertDiv);
+            bsAlert.close();
+        }, 5000);
+    }
+</script>
+{% endblock %} 

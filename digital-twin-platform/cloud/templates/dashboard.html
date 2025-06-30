@@ -1,0 +1,373 @@
+{% extends "base.html" %}
+
+{% block title %}仪表盘 - 水网数字孪生平台{% endblock %}
+
+{% block extra_css %}
+<style>
+    .chart-container {
+        position: relative;
+        height: 300px;
+        width: 100%;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12 mb-4">
+        <div class="card">
+            <div class="card-body">
+                <h2 class="card-title">水网系统仪表盘</h2>
+                <p class="card-text">实时监控水网系统状态和设备数据</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <div class="card mb-4">
+            <div class="card-body">
+                <h5 class="card-title">实时数据监控</h5>
+                <div class="chart-container">
+                    <canvas id="realtime-chart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card mb-4">
+            <div class="card-body">
+                <h5 class="card-title">设备状态</h5>
+                <div class="chart-container" style="height: 200px;">
+                    <canvas id="status-chart"></canvas>
+                </div>
+                <div class="mt-3">
+                    <div class="d-flex justify-content-between">
+                        <span>在线</span>
+                        <span id="online-count">0</span>
+                    </div>
+                    <div class="d-flex justify-content-between">
+                        <span>离线</span>
+                        <span id="offline-count">0</span>
+                    </div>
+                    <div class="d-flex justify-content-between">
+                        <span>故障</span>
+                        <span id="error-count">0</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-6">
+        <div class="card mb-4">
+            <div class="card-body">
+                <h5 class="card-title">最近事件</h5>
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>时间</th>
+                                <th>设备</th>
+                                <th>事件</th>
+                                <th>状态</th>
+                            </tr>
+                        </thead>
+                        <tbody id="events-table-body">
+                            <tr>
+                                <td colspan="4" class="text-center">加载中...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card mb-4">
+            <div class="card-body">
+                <h5 class="card-title">边缘节点状态</h5>
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>节点ID</th>
+                                <th>位置</th>
+                                <th>状态</th>
+                                <th>设备数</th>
+                            </tr>
+                        </thead>
+                        <tbody id="edge-nodes-table-body">
+                            <tr>
+                                <td colspan="4" class="text-center">加载中...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // 初始化WebSocket连接
+    const socket = io();
+    
+    // 图表配置和数据
+    let realtimeChart, statusChart;
+    const realtimeData = {
+        labels: Array(30).fill(''),
+        datasets: [
+            {
+                label: '流量 (L/min)',
+                data: Array(30).fill(null),
+                borderColor: 'rgba(54, 162, 235, 1)',
+                backgroundColor: 'rgba(54, 162, 235, 0.2)',
+                tension: 0.4
+            },
+            {
+                label: '压力 (MPa)',
+                data: Array(30).fill(null),
+                borderColor: 'rgba(255, 99, 132, 1)',
+                backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                tension: 0.4
+            },
+            {
+                label: '水质指数',
+                data: Array(30).fill(null),
+                borderColor: 'rgba(75, 192, 192, 1)',
+                backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                tension: 0.4
+            }
+        ]
+    };
+    
+    const statusData = {
+        labels: ['在线', '离线', '故障'],
+        datasets: [{
+            data: [0, 0, 0],
+            backgroundColor: [
+                'rgba(75, 192, 192, 0.8)',
+                'rgba(54, 162, 235, 0.8)',
+                'rgba(255, 99, 132, 0.8)'
+            ]
+        }]
+    };
+    
+    document.addEventListener('DOMContentLoaded', function() {
+        // 初始化实时数据图表
+        const realtimeCtx = document.getElementById('realtime-chart').getContext('2d');
+        realtimeChart = new Chart(realtimeCtx, {
+            type: 'line',
+            data: realtimeData,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: false
+                    }
+                },
+                animation: {
+                    duration: 0
+                }
+            }
+        });
+        
+        // 初始化状态图表
+        const statusCtx = document.getElementById('status-chart').getContext('2d');
+        statusChart = new Chart(statusCtx, {
+            type: 'doughnut',
+            data: statusData,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: false
+                    }
+                }
+            }
+        });
+        
+        // 获取设备状态数据
+        fetchDeviceStatus();
+        
+        // 获取最近事件
+        fetchRecentEvents();
+        
+        // 获取边缘节点状态
+        fetchEdgeNodesStatus();
+    });
+    
+    // WebSocket事件处理
+    socket.on('telemetry_update', function(data) {
+        updateRealtimeChart(data);
+    });
+    
+    socket.on('status_update', function(data) {
+        // 更新设备状态
+        fetchDeviceStatus();
+        // 添加到事件列表
+        addEventToTable({
+            timestamp: new Date().toISOString(),
+            device_id: data.device_id,
+            event: '状态更新',
+            status: data.status
+        });
+    });
+    
+    // 更新实时图表
+    function updateRealtimeChart(data) {
+        // 添加时间标签
+        const now = new Date();
+        const timeString = now.getHours() + ':' + now.getMinutes() + ':' + now.getSeconds();
+        realtimeData.labels.shift();
+        realtimeData.labels.push(timeString);
+        
+        // 更新数据集
+        if (data.flow_rate !== undefined) {
+            realtimeData.datasets[0].data.shift();
+            realtimeData.datasets[0].data.push(data.flow_rate);
+        }
+        
+        if (data.pressure !== undefined) {
+            realtimeData.datasets[1].data.shift();
+            realtimeData.datasets[1].data.push(data.pressure);
+        }
+        
+        if (data.water_quality !== undefined) {
+            realtimeData.datasets[2].data.shift();
+            realtimeData.datasets[2].data.push(data.water_quality);
+        }
+        
+        // 更新图表
+        realtimeChart.update();
+    }
+    
+    // 获取设备状态
+    function fetchDeviceStatus() {
+        fetch('/api/devices')
+            .then(response => response.json())
+            .then(data => {
+                // 计算状态统计
+                const statusCounts = {
+                    online: 0,
+                    offline: 0,
+                    error: 0
+                };
+                
+                data.forEach(device => {
+                    if (device.status === 'online' || device.status === 'on' || device.status === 'open' || device.status === 'partially_open') statusCounts.online++;
+                    else if (device.status === 'offline' || device.status === 'off' || device.status === 'closed') statusCounts.offline++;
+                    else if (device.status === 'error') statusCounts.error++;
+                });
+                
+                // 更新状态图表
+                statusData.datasets[0].data = [
+                    statusCounts.online,
+                    statusCounts.offline,
+                    statusCounts.error
+                ];
+                statusChart.update();
+                
+                // 更新状态计数
+                document.getElementById('online-count').textContent = statusCounts.online;
+                document.getElementById('offline-count').textContent = statusCounts.offline;
+                document.getElementById('error-count').textContent = statusCounts.error;
+            })
+            .catch(error => console.error('获取设备状态失败:', error));
+    }
+    
+    // 获取最近事件
+    function fetchRecentEvents() {
+        // 模拟事件数据
+        const mockEvents = [
+            { timestamp: '2023-05-01T10:30:15', device_id: 'water_sensor-001', event: '数据上报', status: 'success' },
+            { timestamp: '2023-05-01T10:25:10', device_id: 'valve-002', event: '阀门开度调整', status: 'success' },
+            { timestamp: '2023-05-01T10:20:05', device_id: 'water_sensor-003', event: '水质告警', status: 'warning' },
+            { timestamp: '2023-05-01T10:15:00', device_id: 'edge-001', event: '连接断开', status: 'error' },
+            { timestamp: '2023-05-01T10:10:45', device_id: 'pump-001', event: '水泵启动', status: 'success' }
+        ];
+        
+        const tableBody = document.getElementById('events-table-body');
+        tableBody.innerHTML = '';
+        
+        mockEvents.forEach(event => {
+            addEventToTable(event, false);
+        });
+    }
+    
+    // 添加事件到表格
+    function addEventToTable(event, prepend = true) {
+        const tableBody = document.getElementById('events-table-body');
+        const row = document.createElement('tr');
+        
+        // 格式化时间
+        const eventTime = new Date(event.timestamp);
+        const timeString = eventTime.getHours() + ':' + 
+                          (eventTime.getMinutes() < 10 ? '0' : '') + eventTime.getMinutes() + ':' + 
+                          (eventTime.getSeconds() < 10 ? '0' : '') + eventTime.getSeconds();
+        
+        // 设置状态样式
+        let statusClass = '';
+        if (event.status === 'success') statusClass = 'text-success';
+        else if (event.status === 'warning') statusClass = 'text-warning';
+        else if (event.status === 'error') statusClass = 'text-danger';
+        
+        row.innerHTML = `
+            <td>${timeString}</td>
+            <td>${event.device_id}</td>
+            <td>${event.event}</td>
+            <td class="${statusClass}">${event.status}</td>
+        `;
+        
+        if (prepend && tableBody.firstChild) {
+            tableBody.insertBefore(row, tableBody.firstChild);
+            // 保持表格不超过5行
+            if (tableBody.children.length > 5) {
+                tableBody.removeChild(tableBody.lastChild);
+            }
+        } else {
+            tableBody.appendChild(row);
+        }
+    }
+    
+    // 获取边缘节点状态
+    function fetchEdgeNodesStatus() {
+        // 模拟边缘节点数据
+        const mockEdgeNodes = [
+            { id: 'edge-001', location: '泵站A', status: 'online', device_count: 5 },
+            { id: 'edge-002', location: '泵站B', status: 'online', device_count: 3 },
+            { id: 'edge-003', location: '水库', status: 'offline', device_count: 2 }
+        ];
+        
+        const tableBody = document.getElementById('edge-nodes-table-body');
+        tableBody.innerHTML = '';
+        
+        mockEdgeNodes.forEach(node => {
+            const row = document.createElement('tr');
+            
+            // 设置状态样式
+            let statusClass = '';
+            if (node.status === 'online') statusClass = 'text-success';
+            else if (node.status === 'offline') statusClass = 'text-secondary';
+            else if (node.status === 'error') statusClass = 'text-danger';
+            
+            row.innerHTML = `
+                <td>${node.id}</td>
+                <td>${node.location}</td>
+                <td class="${statusClass}">${node.status}</td>
+                <td>${node.device_count}</td>
+            `;
+            
+            tableBody.appendChild(row);
+        });
+    }
+</script>
+{% endblock %} 
