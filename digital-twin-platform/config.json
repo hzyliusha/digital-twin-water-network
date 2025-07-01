@@ -1,0 +1,39 @@
+{
+    "system": {
+        "name": "大坝数字孪生系统",
+        "version": "1.0.0"
+    },
+    "sensors": {
+        "dam_id": "DAM001",
+        "sampling_interval": 5,
+        "data_retention_days": 30
+    },
+    "edge_server": {
+        "host": "0.0.0.0",
+        "port": 8001,
+        "batch_size": 10,
+        "batch_interval": 30
+    },
+    "cloud_server": {
+        "host": "0.0.0.0",
+        "port": 8002,
+        "database": "cloud_data.db"
+    },
+    "thresholds": {
+        "water_level": {
+            "normal": 85,
+            "warning": 90,
+            "critical": 95
+        },
+        "pressure": {
+            "normal": 120,
+            "warning": 140,
+            "critical": 160
+        },
+        "flow_rate": {
+            "normal": 150,
+            "warning": 200,
+            "critical": 250
+        }
+    }
+} 
